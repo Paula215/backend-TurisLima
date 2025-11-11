@@ -1,48 +1,57 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.routes.user_routes import router as user_router
+from fastapi.staticfiles import StaticFiles
 from app.database.database import connect_to_mongo, close_mongo_connection
+from app.routes import user_routes, places_routes, events_routes
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
-    title="TurisLima Backend",
-    description="API para gestión de turismo en Lima",
+    title="TurisLima API",
+    description="API para turismo en Lima",
     version="1.0.0"
 )
 
-# CORS - Configurar según tus necesidades
+# CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # En producción, especifica los dominios permitidos
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# Servir archivos estáticos (avatars)
+app.mount("/static", StaticFiles(directory="app/static"), name="static")
+
 @app.on_event("startup")
-def startup_db_client():
-    """Evento que se ejecuta al iniciar la aplicación"""
+async def startup_event():
+    logger.info("🚀 Iniciando aplicación...")
     connect_to_mongo()
 
 @app.on_event("shutdown")
-def shutdown_db_client():
-    """Evento que se ejecuta al cerrar la aplicación"""
+async def shutdown_event():
+    logger.info("👋 Cerrando aplicación...")
     close_mongo_connection()
 
-# Incluir routers
-app.include_router(user_router, prefix="/api/users", tags=["Users"])
-
-@app.get("/", tags=["Root"])
+@app.get("/")
 def root():
     return {
-        "message": "Backend TurisLima funcionando 🚀",
-        "version": "1.0.0",
+        "message": "TurisLima API",
+        "status": "running",
         "docs": "/docs"
     }
 
-@app.get("/health", tags=["Health"])
-def health_check():
-    """Endpoint para verificar el estado del servicio"""
-    return {
-        "status": "healthy",
-        "service": "TurisLima Backend"
-    }
+@app.get("/health")
+def health():
+    from app.database.database import db
+    if db is not None:
+        return {"status": "ok", "database": "connected"}
+    return {"status": "error", "database": "disconnected"}
+
+# Incluir routers
+app.include_router(user_routes.router, prefix="/api/users", tags=["Users"])
+app.include_router(places_routes.router, prefix="/api/places", tags=["Places"])
+app.include_router(events_routes.router, prefix="/api/events", tags=["Events"])

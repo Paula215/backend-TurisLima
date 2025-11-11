@@ -8,7 +8,7 @@ load_dotenv()
 MONGO_URI = os.getenv("MONGO_URI")
 DB_NAME = os.getenv("DB_NAME")
 
-# Variables globales - inicialmente None
+# Variables globales
 client = None
 db = None
 users_collection = None
@@ -20,28 +20,30 @@ def connect_to_mongo():
     global client, db, users_collection, places_collection, events_collection
     
     try:
-        client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
+        print("🔄 Conectando a MongoDB...")
+        client = MongoClient(
+            MONGO_URI, 
+            serverSelectionTimeoutMS=5000,
+            connectTimeoutMS=5000,
+            socketTimeoutMS=5000
+        )
+        
         client.admin.command('ping')
         
         db = client[DB_NAME]
-        
         users_collection = db["users"]
         places_collection = db["places"]
         events_collection = db["events"]
         
-        try:
-            users_collection.create_index("email", unique=True)
-            users_collection.create_index("username", unique=True)
-            places_collection.create_index("place_id", unique=True)
-            events_collection.create_index("event_id", unique=True)
-        except Exception as idx_error:
-            print(f"⚠️  Advertencia al crear índices: {idx_error}")
+        print(f"✅ Conectado a MongoDB Atlas")
+        print(f"📊 users: {users_collection.count_documents({})}, "
+              f"places: {places_collection.count_documents({})}, "
+              f"events: {events_collection.count_documents({})}")
         
-        print("✅ Conectado exitosamente a Mongo Atlas")
         return True
         
     except ConnectionFailure as e:
-        print(f"❌ Error al conectar a MongoDB: {e}")
+        print(f"❌ Error al conectar: {e}")
         return False
     except Exception as e:
         print(f"❌ Error inesperado: {e}")
@@ -52,7 +54,7 @@ def close_mongo_connection():
     global client
     if client:
         client.close()
-        print("🔌 Conexión a MongoDB cerrada")
+        print("🔌 Conexión cerrada")
 
 def get_database():
     """Retorna la instancia de la base de datos"""
