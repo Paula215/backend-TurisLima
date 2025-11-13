@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from app.database.database import connect_to_mongo, close_mongo_connection
-from app.routes import user_routes, places_routes, events_routes
+from app.routes import user_routes, places_routes, events_routes, feed_routes
 import logging
 
 logging.basicConfig(level=logging.INFO)
@@ -55,3 +55,4 @@ def health():
 app.include_router(user_routes.router, prefix="/api/users", tags=["Users"])
 app.include_router(places_routes.router, prefix="/api/places", tags=["Places"])
 app.include_router(events_routes.router, prefix="/api/events", tags=["Events"])
+app.include_router(feed_routes.router, prefix="/api/feed", tags=["Feed"])

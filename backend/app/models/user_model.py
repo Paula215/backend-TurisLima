@@ -2,6 +2,7 @@
 from bson import ObjectId
 from pydantic import BaseModel, Field, EmailStr, validator
 from typing import Optional, List
+from fastapi import Body
 
 class PyObjectId(ObjectId):
     @classmethod
@@ -42,7 +43,9 @@ class UserLogin(BaseModel):
     email: EmailStr
     password: str
 
+
 class UserResponse(BaseModel):
+    """Respuesta de usuario (sin password)"""
     id: str = Field(alias="_id")
     username: str
     email: EmailStr
@@ -50,6 +53,19 @@ class UserResponse(BaseModel):
     age: Optional[int] = None
     preferences: List[str] = []
     avatar: Optional[str] = None
-    
-    class Config:
-        populate_by_name = True
+    bio: Optional[str] = None
+    preferences:  List[str] = []
+    interactions: List[str] = []
+    saved_places: List[str] = []  # IDs de lugares guardados
+    saved_events: List[str] = []  # IDs de eventos guardados
+    liked_places: List[str] = []  # IDs de lugares con like
+    liked_events: List[str] = []  # IDs de eventos con like
+
+
+class UserUpdate(BaseModel):
+    """Modelo para actualizar usuario"""
+    username: Optional[str] = None
+    full_name: Optional[str] = None
+    bio: Optional[str] = None
+    avatar: Optional[str] = None
+    preferences: Optional[str] = None

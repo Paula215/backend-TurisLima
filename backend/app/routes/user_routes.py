@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, status, Body 
 import bcrypt
 from app.database.database import users_collection
 from pymongo.errors import DuplicateKeyError
@@ -38,6 +38,7 @@ def register_user(user: UserRegister):
         "visited_places": [],
         "saved_places": [],
         "interactions": [],
+        "recommendations": [],
     }
     
     try:
@@ -565,3 +566,76 @@ def add_interaction(user_id: str, interaction: str):
         )
     
     return {"message": "Interacción registrada"}
+
+# ==================== RECOMMENDATIONS ====================
+
+@router.put("/{user_id}/recommendations")
+def update_recommendations(user_id: str, data: dict = Body(...)):
+    """
+    Actualiza o reemplaza completamente las recomendaciones del usuario.
+    Espera un JSON como:
+    {
+        "recommended_ids": ["67300c3c5678abcd9012ef34", "67300d2a9012abcd3456ef78"]
+    }
+    """
+    if database.users_collection is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Base de datos no disponible"
+        )
+
+    if not ObjectId.is_valid(user_id):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="ID de usuario inválido"
+        )
+
+    recommended_ids = data.get("recommended_ids")
+    if not isinstance(recommended_ids, list):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="El campo 'recommended_ids' debe ser una lista"
+        )
+
+    result = database.users_collection.update_one(
+        {"_id": ObjectId(user_id)},
+        {"$set": {"recommendations": recommended_ids}}
+    )
+
+    if result.matched_count == 0:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Usuario no encontrado"
+        )
+
+    return {"message": "Recomendaciones actualizadas correctamente"}
+
+
+@router.get("/{user_id}/recommendations")
+def get_recommendations(user_id: str):
+    """Obtiene la lista de recomendaciones del usuario"""
+
+    if database.users_collection is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Base de datos no disponible"
+        )
+
+    if not ObjectId.is_valid(user_id):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="ID de usuario inválido"
+        )
+
+    user = database.users_collection.find_one(
+        {"_id": ObjectId(user_id)},
+        {"recommendations": 1}
+    )
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Usuario no encontrado"
+        )
+
+    return {"recommendations": user.get("recommendations", [])}
