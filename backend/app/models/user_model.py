@@ -51,15 +51,11 @@ class UserResponse(BaseModel):
     email: EmailStr
     gender: Optional[str] = None
     age: Optional[int] = None
-    preferences: List[str] = []
     avatar: Optional[str] = None
-    bio: Optional[str] = None
-    preferences:  List[str] = []
     interactions: List[str] = []
-    saved_places: List[str] = []  # IDs de lugares guardados
-    saved_events: List[str] = []  # IDs de eventos guardados
-    liked_places: List[str] = []  # IDs de lugares con like
-    liked_events: List[str] = []  # IDs de eventos con like
+    recommendations: List[str] = []
+    saves: List[str] = []  # IDs de lugares guardados
+    likes: List[str] = []  # IDs de eventos con like
 
 
 class UserUpdate(BaseModel):

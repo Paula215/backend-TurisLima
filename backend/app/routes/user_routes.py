@@ -31,12 +31,10 @@ def register_user(user: UserRegister):
         "password": hashed_password.decode('utf-8'),
         "gender": user.gender,
         "age": user.age,
-        "preferences": user.preferences or [],
         "avatar": None,
-        "liked_places": [],
-        "liked_events": [],
-        "visited_places": [],
-        "saved_places": [],
+        "likes": [],
+        "visits": [],
+        "saves": [],
         "interactions": [],
         "recommendations": [],
     }
@@ -211,157 +209,9 @@ def delete_user(user_id: str):
     
     return {"message": "Usuario eliminado exitosamente"}
 
-# ==================== PREFERENCIAS ====================
 
-@router.post("/{user_id}/preferences")
-def add_preference(user_id: str, preference: str):
-    """Añade una preferencia al usuario"""
-    
-    if database.users_collection is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Base de datos no disponible"
-        )
-    
-    if not ObjectId.is_valid(user_id):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="ID de usuario inválido"
-        )
-    
-    result = database.users_collection.update_one(
-        {"_id": ObjectId(user_id)},
-        {"$addToSet": {"preferences": preference}}
-    )
-    
-    if result.matched_count == 0:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Usuario no encontrado"
-        )
-    
-    return {"message": f"Preferencia '{preference}' añadida"}
-
-@router.delete("/{user_id}/preferences/{preference}")
-def remove_preference(user_id: str, preference: str):
-    """Elimina una preferencia del usuario"""
-    
-    if database.users_collection is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Base de datos no disponible"
-        )
-    
-    if not ObjectId.is_valid(user_id):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="ID de usuario inválido"
-        )
-    
-    result = database.users_collection.update_one(
-        {"_id": ObjectId(user_id)},
-        {"$pull": {"preferences": preference}}
-    )
-    
-    if result.matched_count == 0:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Usuario no encontrado"
-        )
-    
-    return {"message": f"Preferencia '{preference}' eliminada"}
-
-# ==================== LUGARES ====================
-
-@router.post("/{user_id}/liked-places/{place_id}")
-def like_place(user_id: str, place_id: str):
-    """Añade un lugar a los favoritos del usuario"""
-    
-    if database.users_collection is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Base de datos no disponible"
-        )
-    
-    if not ObjectId.is_valid(user_id):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="ID de usuario inválido"
-        )
-    
-    result = database.users_collection.update_one(
-        {"_id": ObjectId(user_id)},
-        {"$addToSet": {"liked_places": place_id}}
-    )
-    
-    if result.matched_count == 0:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Usuario no encontrado"
-        )
-    
-    return {"message": "Lugar añadido a favoritos"}
-
-@router.delete("/{user_id}/liked-places/{place_id}")
-def unlike_place(user_id: str, place_id: str):
-    """Elimina un lugar de los favoritos"""
-    
-    if database.users_collection is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Base de datos no disponible"
-        )
-    
-    if not ObjectId.is_valid(user_id):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="ID de usuario inválido"
-        )
-    
-    result = database.users_collection.update_one(
-        {"_id": ObjectId(user_id)},
-        {"$pull": {"liked_places": place_id}}
-    )
-    
-    if result.matched_count == 0:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Usuario no encontrado"
-        )
-    
-    return {"message": "Lugar eliminado de favoritos"}
-
-@router.get("/{user_id}/liked-places")
-def get_liked_places(user_id: str):
-    """Obtiene los lugares favoritos del usuario"""
-    
-    if database.users_collection is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Base de datos no disponible"
-        )
-    
-    if not ObjectId.is_valid(user_id):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="ID de usuario inválido"
-        )
-    
-    user = database.users_collection.find_one(
-        {"_id": ObjectId(user_id)},
-        {"liked_places": 1}
-    )
-    
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Usuario no encontrado"
-        )
-    
-    return {"liked_places": user.get("liked_places", [])}
-
-@router.post("/{user_id}/saved-places/{place_id}")
-def save_place(user_id: str, place_id: str):
+@router.post("/{user_id}/saves/{combined_id}")
+def save_place(user_id: str, combined_id: str):
     """Guarda un lugar para visitar después"""
     
     if database.users_collection is None:
@@ -378,7 +228,7 @@ def save_place(user_id: str, place_id: str):
     
     result = database.users_collection.update_one(
         {"_id": ObjectId(user_id)},
-        {"$addToSet": {"saved_places": place_id}}
+        {"$addToSet": {"saves": combined_id}}
     )
     
     if result.matched_count == 0:
@@ -389,8 +239,8 @@ def save_place(user_id: str, place_id: str):
     
     return {"message": "Lugar guardado"}
 
-@router.delete("/{user_id}/saved-places/{place_id}")
-def unsave_place(user_id: str, place_id: str):
+@router.delete("/{user_id}/saves/{combined_id}")
+def unsave_place(user_id: str, combined_id: str):
     """Elimina un lugar guardado"""
     
     if database.users_collection is None:
@@ -407,7 +257,7 @@ def unsave_place(user_id: str, place_id: str):
     
     result = database.users_collection.update_one(
         {"_id": ObjectId(user_id)},
-        {"$pull": {"saved_places": place_id}}
+        {"$pull": {"saves": combined_id}}
     )
     
     if result.matched_count == 0:
@@ -418,8 +268,8 @@ def unsave_place(user_id: str, place_id: str):
     
     return {"message": "Lugar eliminado de guardados"}
 
-@router.post("/{user_id}/visited-places/{place_id}")
-def mark_place_visited(user_id: str, place_id: str):
+@router.post("/{user_id}/visits/{combined_id}")
+def mark_place_visited(user_id: str, combined_id: str):
     """Marca un lugar como visitado"""
     
     if database.users_collection is None:
@@ -436,7 +286,7 @@ def mark_place_visited(user_id: str, place_id: str):
     
     result = database.users_collection.update_one(
         {"_id": ObjectId(user_id)},
-        {"$addToSet": {"visited_places": place_id}}
+        {"$addToSet": {"visits": combined_id}}
     )
     
     if result.matched_count == 0:
@@ -447,10 +297,39 @@ def mark_place_visited(user_id: str, place_id: str):
     
     return {"message": "Lugar marcado como visitado"}
 
-# ==================== EVENTOS ====================
+@router.delete("/{user_id}/visits/{combined_id}")
+def mark_place_unvisited(user_id: str, combined_id: str):
+    """Desmarca un lugar como visitado"""
+    
+    if database.users_collection is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Base de datos no disponible"
+        )
+    
+    if not ObjectId.is_valid(user_id):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="ID de usuario inválido"
+        )
+    
+    result = database.users_collection.update_one(
+        {"_id": ObjectId(user_id)},
+        {"$pull": {"visits": combined_id}}
+    )
+    
+    if result.matched_count == 0:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Usuario no encontrado"
+        )
+    
+    return {"message": "Lugar desmarcado como visitado"}
 
-@router.post("/{user_id}/liked-events/{event_id}")
-def like_event(user_id: str, event_id: str):
+# ==================== EVENTOS/PLACES ====================
+
+@router.post("/{user_id}/likes/{combined_id}")
+def likes(user_id: str, combined_id: str):
     """Añade un evento a los favoritos"""
     
     if database.users_collection is None:
@@ -467,7 +346,7 @@ def like_event(user_id: str, event_id: str):
     
     result = database.users_collection.update_one(
         {"_id": ObjectId(user_id)},
-        {"$addToSet": {"liked_events": event_id}}
+        {"$addToSet": {"likes": combined_id}}
     )
     
     if result.matched_count == 0:
@@ -478,8 +357,8 @@ def like_event(user_id: str, event_id: str):
     
     return {"message": "Evento añadido a favoritos"}
 
-@router.delete("/{user_id}/liked-events/{event_id}")
-def unlike_event(user_id: str, event_id: str):
+@router.delete("/{user_id}/likes/{combined_id}")
+def unlikes(user_id: str, combined_id: str):
     """Elimina un evento de favoritos"""
     
     if database.users_collection is None:
@@ -496,7 +375,7 @@ def unlike_event(user_id: str, event_id: str):
     
     result = database.users_collection.update_one(
         {"_id": ObjectId(user_id)},
-        {"$pull": {"liked_events": event_id}}
+        {"$pull": {"likes": combined_id}}
     )
     
     if result.matched_count == 0:
@@ -507,34 +386,6 @@ def unlike_event(user_id: str, event_id: str):
     
     return {"message": "Evento eliminado de favoritos"}
 
-@router.get("/{user_id}/liked-events")
-def get_liked_events(user_id: str):
-    """Obtiene los eventos favoritos del usuario"""
-    
-    if database.users_collection is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Base de datos no disponible"
-        )
-    
-    if not ObjectId.is_valid(user_id):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="ID de usuario inválido"
-        )
-    
-    user = database.users_collection.find_one(
-        {"_id": ObjectId(user_id)},
-        {"liked_events": 1}
-    )
-    
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Usuario no encontrado"
-        )
-    
-    return {"liked_events": user.get("liked_events", [])}
 
 # ==================== INTERACCIONES ====================
 

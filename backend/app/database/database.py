@@ -1,6 +1,7 @@
 from pymongo import MongoClient
 from pymongo.errors import ConnectionFailure
 from dotenv import load_dotenv
+from fastapi import Depends
 import os
 
 load_dotenv()
@@ -14,10 +15,10 @@ db = None
 users_collection = None
 places_collection = None
 events_collection = None
+combined_collection = None
 
 def connect_to_mongo():
-    """Conecta a MongoDB y configura las colecciones"""
-    global client, db, users_collection, places_collection, events_collection
+    global client, db, users_collection, places_collection, events_collection, combined_collection
     
     try:
         print("🔄 Conectando a MongoDB...")
@@ -31,16 +32,20 @@ def connect_to_mongo():
         client.admin.command('ping')
         
         db = client[DB_NAME]
+        
         users_collection = db["users"]
         places_collection = db["places"]
         events_collection = db["events"]
+        combined_collection = db["combined"]   # <--- ahora sí global
         
         print(f"✅ Conectado a MongoDB Atlas")
-        print(f"📊 users: {users_collection.count_documents({})}, "
-              f"places: {places_collection.count_documents({})}, "
-              f"events: {events_collection.count_documents({})}")
         
         return True
+        
+    except Exception as e:
+        print(f"❌ Error inesperado: {e}")
+        return False
+
         
     except ConnectionFailure as e:
         print(f"❌ Error al conectar: {e}")
@@ -48,6 +53,25 @@ def connect_to_mongo():
     except Exception as e:
         print(f"❌ Error inesperado: {e}")
         return False
+
+def get_collections():
+    """Retorna todas las colecciones"""
+    return {
+        "users": users_collection,
+        "places": places_collection,
+        "events": events_collection,
+        "combined": combined_collection
+    }
+
+def get_collections_dependency():
+    """Dependencia de FastAPI que retorna las colecciones de MongoDB."""
+    collections = get_collections()
+    
+    # ... (Tu lógica de verificación de seguridad)
+    if collections["users"] is None:
+        raise ConnectionError("MongoDB collections are not initialized.")
+        
+    return collections
 
 def close_mongo_connection():
     """Cierra la conexión a MongoDB"""
