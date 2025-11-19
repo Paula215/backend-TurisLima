@@ -211,7 +211,7 @@ def delete_user(user_id: str):
 
 
 @router.post("/{user_id}/saves/{combined_id}")
-def save_place(user_id: str, combined_id: str):
+def saves(user_id: str, combined_id: str):
     """Guarda un lugar para visitar después"""
     
     if database.users_collection is None:
@@ -239,8 +239,39 @@ def save_place(user_id: str, combined_id: str):
     
     return {"message": "Lugar guardado"}
 
+@router.get("/{user_id}/saves")
+def get_saves(user_id: str):
+    """Obtiene la lista de lugares guardados por el usuario"""
+    
+    if database.users_collection is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Base de datos no disponible"
+        )
+    
+    if not ObjectId.is_valid(user_id):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="ID de usuario inválido"
+        )
+    
+    user = database.users_collection.find_one(
+        {"_id": ObjectId(user_id)},
+        {"saves": 1}
+    )
+    
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Usuario no encontrado"
+        )
+    
+    saved_places = user.get("saves", [])
+    
+    return {"saved_places": saved_places}
+
 @router.delete("/{user_id}/saves/{combined_id}")
-def unsave_place(user_id: str, combined_id: str):
+def unsave(user_id: str, combined_id: str):
     """Elimina un lugar guardado"""
     
     if database.users_collection is None:
@@ -269,7 +300,7 @@ def unsave_place(user_id: str, combined_id: str):
     return {"message": "Lugar eliminado de guardados"}
 
 @router.post("/{user_id}/visits/{combined_id}")
-def mark_place_visited(user_id: str, combined_id: str):
+def visits(user_id: str, combined_id: str):
     """Marca un lugar como visitado"""
     
     if database.users_collection is None:
@@ -297,8 +328,40 @@ def mark_place_visited(user_id: str, combined_id: str):
     
     return {"message": "Lugar marcado como visitado"}
 
+@router.get("/{user_id}/visits")
+def get_visits(user_id: str):
+    """Obtiene la lista de lugares visitados por el usuario"""
+    
+    if database.users_collection is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Base de datos no disponible"
+        )
+    
+    if not ObjectId.is_valid(user_id):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="ID de usuario inválido"
+        )
+    
+    user = database.users_collection.find_one(
+        {"_id": ObjectId(user_id)},
+        {"visits": 1}
+    )
+    
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Usuario no encontrado"
+        )
+    
+    visited_places = user.get("visits", [])
+    
+    return {"visited_places": visited_places}
+
+
 @router.delete("/{user_id}/visits/{combined_id}")
-def mark_place_unvisited(user_id: str, combined_id: str):
+def unvisits(user_id: str, combined_id: str):
     """Desmarca un lugar como visitado"""
     
     if database.users_collection is None:
@@ -357,6 +420,37 @@ def likes(user_id: str, combined_id: str):
     
     return {"message": "Evento añadido a favoritos"}
 
+@router.get("/{user_id}/likes")
+def get_likes(user_id: str):
+    """Obtiene la lista de eventos favoritos del usuario"""
+    
+    if database.users_collection is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Base de datos no disponible"
+        )
+    
+    if not ObjectId.is_valid(user_id):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="ID de usuario inválido"
+        )
+    
+    user = database.users_collection.find_one(
+        {"_id": ObjectId(user_id)},
+        {"likes": 1}
+    )
+    
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Usuario no encontrado"
+        )
+    
+    liked_events = user.get("likes", [])
+    
+    return {"liked_events": liked_events}
+
 @router.delete("/{user_id}/likes/{combined_id}")
 def unlikes(user_id: str, combined_id: str):
     """Elimina un evento de favoritos"""
@@ -389,35 +483,26 @@ def unlikes(user_id: str, combined_id: str):
 
 # ==================== INTERACCIONES ====================
 
-@router.post("/{user_id}/interactions")
-def add_interaction(user_id: str, interaction: str):
-    """Registra una interacción del usuario para el sistema de recomendaciones"""
-    
-    if database.users_collection is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Base de datos no disponible"
-        )
-    
-    if not ObjectId.is_valid(user_id):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="ID de usuario inválido"
-        )
-    
-    result = database.users_collection.update_one(
-        {"_id": ObjectId(user_id)},
-        {"$push": {"interactions": interaction}}
-    )
-    
-    if result.matched_count == 0:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Usuario no encontrado"
-        )
-    
-    return {"message": "Interacción registrada"}
+@router.post("/{user_id}/interact/{combined_id}")
+def interact(user_id: str, combined_id: str, interaction: str):
+    """
+    Cada interacción del usuario:
+    - Actualiza embedding del usuario
+    - Consulta vector search en Mongo
+    - Guarda recomendaciones
+    """
+    if interaction not in ["view", "click", "save", "like", "visit"]:
+        raise HTTPException(400, "Invalid interaction type")
 
+    try:
+        result = update_user_embedding_and_recommend(user_id, combined_id, interaction)
+        return {
+            "status": "ok",
+            "updated_vector": result["updated_vector"],
+            "new_recommendations": result["recommended_ids"]
+        }
+    except Exception as e:
+        raise HTTPException(500, str(e))
 # ==================== RECOMMENDATIONS ====================
 
 @router.put("/{user_id}/recommendations")
