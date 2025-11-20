@@ -1,6 +1,7 @@
-from fastapi import APIRouter, HTTPException, status, Body 
+from fastapi import APIRouter, HTTPException, status, Body, Query 
 import bcrypt
 from app.database.database import users_collection
+from app.utils.cold_start import initialize_user_recommendations
 from pymongo.errors import DuplicateKeyError
 from bson import ObjectId
 from typing import List, Optional
@@ -10,10 +11,9 @@ from app.database import database
 from app.models.user_model import UserRegister, UserLogin
 
 router = APIRouter()
-
 @router.post("/register", status_code=status.HTTP_201_CREATED)
 def register_user(user: UserRegister):
-    """Registra un nuevo usuario"""
+    """Registra un nuevo usuario Y genera recomendaciones iniciales"""
     
     if database.users_collection is None:
         raise HTTPException(
@@ -31,20 +31,35 @@ def register_user(user: UserRegister):
         "password": hashed_password.decode('utf-8'),
         "gender": user.gender,
         "age": user.age,
+        "preferences": user.preferences if hasattr(user, 'preferences') else [],  # NUEVO
         "avatar": None,
         "likes": [],
         "visits": [],
         "saves": [],
         "interactions": [],
-        "recommendations": [],
+        "recommendations": [],  # Vacío inicialmente
     }
     
     try:
         result = database.users_collection.insert_one(new_user)
-        return {
-            "message": "Usuario registrado exitosamente",
-            "user_id": str(result.inserted_id)
-        }
+        user_id = str(result.inserted_id)
+        
+        # 🔥 NUEVO: Generar recomendaciones iniciales
+        try:
+            rec_result = initialize_user_recommendations(user_id, database.users_collection)
+            return {
+                "message": "Usuario registrado exitosamente",
+                "user_id": user_id,
+                "recommendations_initialized": rec_result.get("success", False),
+                "num_recommendations": rec_result.get("num_recommendations", 0)
+            }
+        except Exception as e:
+            print(f"⚠️  Error al generar recomendaciones iniciales: {e}")
+            return {
+                "message": "Usuario registrado exitosamente (sin recomendaciones iniciales)",
+                "user_id": user_id
+            }
+            
     except DuplicateKeyError as e:
         if "email" in str(e):
             raise HTTPException(
@@ -212,7 +227,7 @@ def delete_user(user_id: str):
 
 @router.post("/{user_id}/saves/{combined_id}")
 def saves(user_id: str, combined_id: str):
-    """Guarda un lugar para visitar después"""
+    """Guarda un lugar para visitar después Y actualiza recomendaciones"""
     
     if database.users_collection is None:
         raise HTTPException(
@@ -237,7 +252,30 @@ def saves(user_id: str, combined_id: str):
             detail="Usuario no encontrado"
         )
     
-    return {"message": "Lugar guardado"}
+    # 🔥 Actualizar recomendaciones
+    try:
+        combined_col = database.db["combined"]
+        item = combined_col.find_one({"_id": ObjectId(combined_id)})
+        
+        if item:
+            item_type = item.get("type", "place")
+            item_id = str(item.get("place_id") or item.get("event_id", ""))
+            
+            rec_result = update_user_recommendations(
+                user_id=user_id,
+                interaction_type="save",
+                item_id=item_id,
+                item_type=item_type,
+                users_collection=database.users_collection
+            )
+            
+            return {
+                "message": "Lugar guardado",
+                "recommendations_updated": rec_result.get("success", False)
+            }
+    except Exception as e:
+        print(f"⚠️  Error al actualizar recomendaciones: {e}")
+        return {"message": "Lugar guardado"}
 
 @router.get("/{user_id}/saves")
 def get_saves(user_id: str):
@@ -301,7 +339,7 @@ def unsave(user_id: str, combined_id: str):
 
 @router.post("/{user_id}/visits/{combined_id}")
 def visits(user_id: str, combined_id: str):
-    """Marca un lugar como visitado"""
+    """Marca un lugar como visitado Y actualiza recomendaciones"""
     
     if database.users_collection is None:
         raise HTTPException(
@@ -326,7 +364,31 @@ def visits(user_id: str, combined_id: str):
             detail="Usuario no encontrado"
         )
     
-    return {"message": "Lugar marcado como visitado"}
+    # 🔥 Actualizar recomendaciones con peso alto (visit = 0.7)
+    try:
+        combined_col = database.db["combined"]
+        item = combined_col.find_one({"_id": ObjectId(combined_id)})
+        
+        if item:
+            item_type = item.get("type", "place")
+            item_id = str(item.get("place_id") or item.get("event_id", ""))
+            
+            rec_result = update_user_recommendations(
+                user_id=user_id,
+                interaction_type="visit",
+                item_id=item_id,
+                item_type=item_type,
+                users_collection=database.users_collection
+            )
+            
+            return {
+                "message": "Lugar marcado como visitado",
+                "recommendations_updated": rec_result.get("success", False)
+            }
+    except Exception as e:
+        print(f"⚠️  Error al actualizar recomendaciones: {e}")
+        return {"message": "Lugar marcado como visitado"}
+
 
 @router.get("/{user_id}/visits")
 def get_visits(user_id: str):
@@ -393,7 +455,7 @@ def unvisits(user_id: str, combined_id: str):
 
 @router.post("/{user_id}/likes/{combined_id}")
 def likes(user_id: str, combined_id: str):
-    """Añade un evento a los favoritos"""
+    """Añade un evento/lugar a favoritos Y actualiza recomendaciones"""
     
     if database.users_collection is None:
         raise HTTPException(
@@ -407,6 +469,7 @@ def likes(user_id: str, combined_id: str):
             detail="ID de usuario inválido"
         )
     
+    # Guardar like en la base de datos
     result = database.users_collection.update_one(
         {"_id": ObjectId(user_id)},
         {"$addToSet": {"likes": combined_id}}
@@ -418,7 +481,35 @@ def likes(user_id: str, combined_id: str):
             detail="Usuario no encontrado"
         )
     
-    return {"message": "Evento añadido a favoritos"}
+    # 🔥 NUEVO: Actualizar recomendaciones basadas en el like
+    try:
+        # Determinar tipo (place o event) desde combined collection
+        combined_col = database.db["combined"]
+        item = combined_col.find_one({"_id": ObjectId(combined_id)})
+        
+        if item:
+            item_type = item.get("type", "place")
+            item_id = str(item.get("place_id") or item.get("event_id", ""))
+            
+            # Actualizar perfil del usuario y generar recomendaciones
+            rec_result = update_user_recommendations(
+                user_id=user_id,
+                interaction_type="like",
+                item_id=item_id,
+                item_type=item_type,
+                users_collection=database.users_collection,
+                n_recommendations=20
+            )
+            
+            return {
+                "message": "Item añadido a favoritos",
+                "recommendations_updated": rec_result.get("success", False),
+                "new_recommendations_count": rec_result.get("num_recommendations", 0)
+            }
+    except Exception as e:
+        print(f"⚠️  Error al actualizar recomendaciones: {e}")
+        # No fallar si las recomendaciones fallan
+        return {"message": "Item añadido a favoritos (recomendaciones no actualizadas)"}
 
 @router.get("/{user_id}/likes")
 def get_likes(user_id: str):
@@ -484,25 +575,73 @@ def unlikes(user_id: str, combined_id: str):
 # ==================== INTERACCIONES ====================
 
 @router.post("/{user_id}/interact/{combined_id}")
-def interact(user_id: str, combined_id: str, interaction: str):
+def interact(
+    user_id: str,
+    combined_id: str,
+    interaction_type: str = Query(..., description="view, click, share")
+):
     """
-    Cada interacción del usuario:
-    - Actualiza embedding del usuario
-    - Consulta vector search en Mongo
-    - Guarda recomendaciones
+    Registra una interacción del usuario sin guardarla permanentemente.
+    Útil para tracking de vistas y clicks.
     """
-    if interaction not in ["view", "click", "save", "like", "visit"]:
-        raise HTTPException(400, "Invalid interaction type")
-
+    if database.users_collection is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Base de datos no disponible"
+        )
+    
+    if not ObjectId.is_valid(user_id):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="ID de usuario inválido"
+        )
+    
+    # Validar tipo de interacción
+    valid_interactions = ["view", "click", "share"]
+    if interaction_type not in valid_interactions:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Tipo de interacción inválido. Debe ser uno de: {valid_interactions}"
+        )
+    
     try:
-        result = update_user_embedding_and_recommend(user_id, combined_id, interaction)
+        # Obtener item de la colección combinada
+        combined_col = database.db["combined"]
+        item = combined_col.find_one({"_id": ObjectId(combined_id)})
+        
+        if not item:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Item no encontrado"
+            )
+        
+        item_type = item.get("type", "place")
+        item_id = str(item.get("place_id") or item.get("event_id", ""))
+        
+        # Actualizar recomendaciones
+        rec_result = update_user_recommendations(
+            user_id=user_id,
+            interaction_type=interaction_type,
+            item_id=item_id,
+            item_type=item_type,
+            users_collection=database.users_collection
+        )
+        
         return {
             "status": "ok",
-            "updated_vector": result["updated_vector"],
-            "new_recommendations": result["recommended_ids"]
+            "interaction_type": interaction_type,
+            "updated_vector": rec_result.get("success", False),
+            "new_recommendations": rec_result.get("num_recommendations", 0)
         }
+        
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(500, str(e))
+        print(f"❌ Error en interact: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error al procesar interacción: {str(e)}"
+        )
 # ==================== RECOMMENDATIONS ====================
 
 @router.put("/{user_id}/recommendations")
@@ -575,3 +714,4 @@ def get_recommendations(user_id: str):
         )
 
     return {"recommendations": user.get("recommendations", [])}
+    
