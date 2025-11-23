@@ -93,7 +93,8 @@ def get_personalized_feed(
                         "location": item.get("distrito", "Lima"),
                         "address": item.get("address", ""),
                         "coordinates": item.get("location", {}),
-                        "tags": item.get("types", [])
+                        "tags": item.get("types", []),
+                        "url": item.get("url", "")
                     })
                 
                 # Lógica para Event
@@ -113,7 +114,8 @@ def get_personalized_feed(
                         "price": {
                             "min": item.get("price_min"),
                             "currency": item.get("price_currency", "PEN")
-                        }
+                        },
+                        "url": item.get("url", "")
                     })
             
             # Si encontramos recomendaciones, las devolvemos y terminamos aquí
@@ -159,7 +161,8 @@ def get_personalized_feed(
             "location": place.get("distrito", "Lima"),
             "address": place.get("address", ""),
             "coordinates": place.get("location", {}),
-            "tags": place.get("types", [])
+            "tags": place.get("types", []),
+            "url": place.get("url", "")
         })
 
     # ============================
@@ -170,7 +173,7 @@ def get_personalized_feed(
         combined_collection
         .find(events_query, {"_id": 1, "event_id": 1, "title": 1, "images": 1, 
                               "category": 1, "address": 1, "city": 1, 
-                              "start_date": 1, "end_date": 1, "price_min": 1, "price_currency": 1})
+                              "start_date": 1, "end_date": 1, "price_min": 1, "price_currency": 1, "url": 1})
         .sort("start_date", -1)
         .limit(events_count * 2)
     )
@@ -193,7 +196,8 @@ def get_personalized_feed(
             "price": {
                 "min": event.get("price_min"),
                 "currency": event.get("price_currency", "PEN")
-            }
+            },
+            "url": event.get("url", "")
         })
 
     # Mezclar todo el feed general

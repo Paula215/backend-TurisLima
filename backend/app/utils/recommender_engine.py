@@ -6,6 +6,7 @@ from pymongo import MongoClient
 from typing import List, Tuple, Optional
 import os
 from dotenv import load_dotenv
+from bson import ObjectId
 
 load_dotenv()
 
@@ -86,32 +87,43 @@ def get_item_embedding(
     try:
         client = MongoClient(connection_string)
         db = client[db_name]
-        
-        # SOLO eventos disponibles por ahora
-        if item_type == "place":
-            print(f"⚠️  Places no tienen embeddings, usando embedding promedio de eventos")
-            # Retornar None para que use el vector actual del usuario
-            return None
-        elif item_type == "event":
-            collection = db["events_vectors"]
-            query_field = "event_id"
+
+        # Ahora los vectores/embeddings están en la colección `combined` y el campo
+        # se llama `vector` (Array de dimensión 384).
+        collection = db["combined"]
+
+        # Intentar buscar por ObjectId en _id
+        query = None
+        try:
+            oid = ObjectId(item_id)
+            query = {"_id": oid}
+        except Exception:
+            # No es ObjectId: buscar por event_id/place_id si aplica
+            if item_type == "event":
+                try:
+                    query = {"event_id": int(item_id)}
+                except Exception:
+                    query = {"_id": item_id}
+            elif item_type == "place":
+                try:
+                    query = {"place_id": int(item_id)}
+                except Exception:
+                    query = {"_id": item_id}
+            else:
+                query = {"_id": item_id}
+
+        doc = collection.find_one(query, {"vector": 1})
+
+        if doc and "vector" in doc:
+            vector = np.array(doc["vector"], dtype=np.float32)
+            print(f"✅ Vector obtenido para {item_type} {item_id}: shape {vector.shape}")
+            return vector
         else:
-            print(f"❌ Tipo de item inválido: {item_type}")
+            print(f"⚠️  No se encontró 'vector' en 'combined' para {item_type} {item_id}")
             return None
-        
-        # Buscar el documento
-        doc = collection.find_one({query_field: int(item_id)}, {"embedding": 1})
-        
-        if doc and "embedding" in doc:
-            embedding = np.array(doc["embedding"], dtype=np.float32)
-            print(f"✅ Embedding obtenido para {item_type} {item_id}: shape {embedding.shape}")
-            return embedding
-        else:
-            print(f"⚠️  No se encontró embedding para {item_type} {item_id}")
-            return None
-            
+
     except Exception as e:
-        print(f"❌ Error al obtener embedding: {e}")
+        print(f"❌ Error al obtener vector: {e}")
         return None
     finally:
         if 'client' in locals():
@@ -146,36 +158,38 @@ def get_top_similar_items(
         db = client[db_name]
         
         recommended_ids = []
-        
-        print(f"🔍 Buscando {n} eventos similares...")
-        
-        # ========== BÚSQUEDA SOLO EN EVENTS ==========
-        events_col = db["events_vectors"]
-        
-        events_pipeline = [
+
+        print(f"🔍 Buscando {n} items similares en 'combined'...")
+
+        combined_col = db["combined"]
+
+        # Buscar por vector en la colección combined. Filtramos por type="event"
+        # para mantener el comportamiento anterior que retornaba sólo eventos.
+        pipeline = [
             {
                 "$vectorSearch": {
                     "queryVector": user_embedding.tolist(),
-                    "path": "embedding",
+                    "path": "vector",
                     "numCandidates": num_candidates,
                     "limit": n,
-                    "index": "vector_index"  # Nombre de tu índice en Atlas
+                    "index": "vector_index",
+                    "filter": {"type": "event"}
                 }
             },
             {
                 "$project": {
                     "_id": 1,
-                    "event_id": 1,
+                    "type": 1,
                     "score": {"$meta": "vectorSearchScore"}
                 }
             }
         ]
-        
-        for doc in events_col.aggregate(events_pipeline):
+
+        for doc in combined_col.aggregate(pipeline):
             recommended_ids.append(str(doc["_id"]))
-            print(f"  🎉 Event {doc.get('event_id')} - Score: {doc.get('score', 0):.4f}")
-        
-        print(f"✅ Encontradas {len(recommended_ids)} recomendaciones de eventos")
+            print(f"  🎉 Item {doc.get('type', '?')} {str(doc.get('_id'))} - Score: {doc.get('score', 0):.4f}")
+
+        print(f"✅ Encontradas {len(recommended_ids)} recomendaciones desde 'combined'")
         return recommended_ids
         
     except Exception as e:

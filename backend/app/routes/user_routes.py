@@ -1,16 +1,41 @@
-from fastapi import APIRouter, HTTPException, status, Body, Query 
+from fastapi import APIRouter, Depends, HTTPException, status, Body, Query 
 import bcrypt
-from app.database.database import users_collection
+from app.database.database import get_collections_dependency, users_collection
 from app.utils.cold_start import initialize_user_recommendations
+from app.utils.recommender_engine import update_user_recommendations  
 from pymongo.errors import DuplicateKeyError
 from bson import ObjectId
 from typing import List, Optional
+from pydantic import BaseModel
 
 # IMPORTANTE: Importar el módulo completo, no las variables directamente
 from app.database import database
 from app.models.user_model import UserRegister, UserLogin
 
+
 router = APIRouter()
+
+
+@router.get("/ping")
+def ping():
+    """Endpoint de prueba para verificar que el servicio de usuarios está activo"""
+    return {"message": "Pong! User service is active."}\
+
+
+@router.get("/pingdb")
+def ping_db():
+    """Verifica la conexión general a MongoDB"""
+    try:
+        # Comando oficial de prueba
+        database.client.admin.command("ping")
+        return {"message": "Pong! Database connection is active."}
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="No se pudo conectar con la base de datos"
+        )
+
+
 @router.post("/register", status_code=status.HTTP_201_CREATED)
 def register_user(user: UserRegister):
     """Registra un nuevo usuario Y genera recomendaciones iniciales"""
@@ -31,20 +56,20 @@ def register_user(user: UserRegister):
         "password": hashed_password.decode('utf-8'),
         "gender": user.gender,
         "age": user.age,
-        "preferences": user.preferences if hasattr(user, 'preferences') else [],  # NUEVO
+        "preferences": user.preferences if hasattr(user, 'preferences') else [],
         "avatar": None,
         "likes": [],
         "visits": [],
         "saves": [],
         "interactions": [],
-        "recommendations": [],  # Vacío inicialmente
+        "recommendations": [],
     }
     
     try:
         result = database.users_collection.insert_one(new_user)
         user_id = str(result.inserted_id)
         
-        # 🔥 NUEVO: Generar recomendaciones iniciales
+        # 🔥 Generar recomendaciones iniciales
         try:
             rec_result = initialize_user_recommendations(user_id, database.users_collection)
             return {
@@ -224,89 +249,117 @@ def delete_user(user_id: str):
     
     return {"message": "Usuario eliminado exitosamente"}
 
-
 @router.post("/{user_id}/saves/{combined_id}")
 def saves(user_id: str, combined_id: str):
-    """Guarda un lugar para visitar después Y actualiza recomendaciones"""
-    
+    """Añade un item a saved y actualiza recomendaciones unificadas"""
+
     if database.users_collection is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Base de datos no disponible"
-        )
-    
+        raise HTTPException(503, "Base de datos no disponible")
+
     if not ObjectId.is_valid(user_id):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="ID de usuario inválido"
-        )
-    
+        raise HTTPException(400, "ID de usuario inválido")
+
     result = database.users_collection.update_one(
         {"_id": ObjectId(user_id)},
         {"$addToSet": {"saves": combined_id}}
     )
-    
+
     if result.matched_count == 0:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Usuario no encontrado"
-        )
-    
-    # 🔥 Actualizar recomendaciones
+        raise HTTPException(404, "Usuario no encontrado")
+
+    # 🔥 Recomendaciones unificadas
     try:
-        combined_col = database.db["combined"]
-        item = combined_col.find_one({"_id": ObjectId(combined_id)})
-        
-        if item:
-            item_type = item.get("type", "place")
-            item_id = str(item.get("place_id") or item.get("event_id", ""))
-            
-            rec_result = update_user_recommendations(
-                user_id=user_id,
-                interaction_type="save",
-                item_id=item_id,
-                item_type=item_type,
-                users_collection=database.users_collection
-            )
-            
-            return {
-                "message": "Lugar guardado",
-                "recommendations_updated": rec_result.get("success", False)
-            }
+        from app.utils.unified_recommender import UnifiedRecommender
+
+        recommender = UnifiedRecommender()
+        new_recommendations = recommender.generate_unified_recommendations(
+            user_id=user_id,
+            users_collection=database.users_collection,
+            n_recommendations=20
+        )
+
+        database.users_collection.update_one(
+            {"_id": ObjectId(user_id)},
+            {"$set": {"recommendations": new_recommendations}}
+        )
+
+        return {
+            "message": "Item guardado",
+            "recommendations_updated": True,
+            "num_recommendations": len(new_recommendations),
+            "recommendation_phase": "cold_start"
+                if recommender.is_cold_start_user(user_id, database.users_collection)
+                else "hybrid"
+        }
+
     except Exception as e:
-        print(f"⚠️  Error al actualizar recomendaciones: {e}")
-        return {"message": "Lugar guardado"}
+        print("⚠️ Error al actualizar recomendaciones (saves):", e)
+        return {"message": "Item guardado (recomendaciones no actualizadas)"}
 
 @router.get("/{user_id}/saves")
 def get_saves(user_id: str):
-    """Obtiene la lista de lugares guardados por el usuario"""
-    
-    if database.users_collection is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Base de datos no disponible"
-        )
+    """
+    Obtiene los lugares guardados CON información completa (título, imagen, etc.)
+    """
+    if database.users_collection is None or database.db is None:
+        raise HTTPException(503, "Base de datos no disponible")
     
     if not ObjectId.is_valid(user_id):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="ID de usuario inválido"
-        )
+        raise HTTPException(400, "ID de usuario inválido")
     
+    # 1. Obtener usuario y sus saves
     user = database.users_collection.find_one(
         {"_id": ObjectId(user_id)},
         {"saves": 1}
     )
     
     if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Usuario no encontrado"
-        )
+        raise HTTPException(404, "Usuario no encontrado")
     
-    saved_places = user.get("saves", [])
+    saved_ids = user.get("saves", [])
     
-    return {"saved_places": saved_places}
+    if not saved_ids:
+        return {
+            "success": True,
+            "saved_places": [],
+            "count": 0
+        }
+    
+    # 2. Convertir IDs a ObjectId
+    object_ids = []
+    for sid in saved_ids:
+        if ObjectId.is_valid(sid):
+            object_ids.append(ObjectId(sid))
+    
+    # 3. Buscar items completos en combined
+    combined_col = database.db["combined"]
+    items = list(combined_col.find({"_id": {"$in": object_ids}}))
+    
+    # 4. Formatear respuesta
+    formatted_items = []
+    for item in items:
+        formatted_item = {
+            "id": str(item["_id"]),
+            "type": item.get("type", "place"),
+            "title": item.get("title", "Sin título"),
+            "category": item.get("category") or item.get("categoria"),
+        }
+        
+        # Extraer imagen
+        if "images" in item and isinstance(item["images"], list) and len(item["images"]) > 0:
+            formatted_item["image"] = item["images"][0]
+        elif "image" in item:
+            formatted_item["image"] = item["image"]
+        else:
+            formatted_item["image"] = None
+        
+        formatted_items.append(formatted_item)
+    
+    return {
+        "success": True,
+        "saved_places": formatted_items,
+        "count": len(formatted_items)
+    }
 
 @router.delete("/{user_id}/saves/{combined_id}")
 def unsave(user_id: str, combined_id: str):
@@ -339,88 +392,116 @@ def unsave(user_id: str, combined_id: str):
 
 @router.post("/{user_id}/visits/{combined_id}")
 def visits(user_id: str, combined_id: str):
-    """Marca un lugar como visitado Y actualiza recomendaciones"""
-    
+    """Registra una visita y actualiza recomendaciones unificadas"""
+
     if database.users_collection is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Base de datos no disponible"
-        )
-    
+        raise HTTPException(503, "Base de datos no disponible")
+
     if not ObjectId.is_valid(user_id):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="ID de usuario inválido"
-        )
-    
+        raise HTTPException(400, "ID de usuario inválido")
+
     result = database.users_collection.update_one(
         {"_id": ObjectId(user_id)},
         {"$addToSet": {"visits": combined_id}}
     )
-    
+
     if result.matched_count == 0:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Usuario no encontrado"
-        )
-    
-    # 🔥 Actualizar recomendaciones con peso alto (visit = 0.7)
+        raise HTTPException(404, "Usuario no encontrado")
+
+    # 🔥 Recomendaciones unificadas
     try:
-        combined_col = database.db["combined"]
-        item = combined_col.find_one({"_id": ObjectId(combined_id)})
-        
-        if item:
-            item_type = item.get("type", "place")
-            item_id = str(item.get("place_id") or item.get("event_id", ""))
-            
-            rec_result = update_user_recommendations(
-                user_id=user_id,
-                interaction_type="visit",
-                item_id=item_id,
-                item_type=item_type,
-                users_collection=database.users_collection
-            )
-            
-            return {
-                "message": "Lugar marcado como visitado",
-                "recommendations_updated": rec_result.get("success", False)
-            }
+        from app.utils.unified_recommender import UnifiedRecommender
+
+        recommender = UnifiedRecommender()
+        new_recommendations = recommender.generate_unified_recommendations(
+            user_id=user_id,
+            users_collection=database.users_collection,
+            n_recommendations=20
+        )
+
+        database.users_collection.update_one(
+            {"_id": ObjectId(user_id)},
+            {"$set": {"recommendations": new_recommendations}}
+        )
+
+        return {
+            "message": "Visita registrada",
+            "recommendations_updated": True,
+            "num_recommendations": len(new_recommendations),
+            "recommendation_phase": "cold_start"
+                if recommender.is_cold_start_user(user_id, database.users_collection)
+                else "hybrid"
+        }
+
     except Exception as e:
-        print(f"⚠️  Error al actualizar recomendaciones: {e}")
-        return {"message": "Lugar marcado como visitado"}
+        print("⚠️ Error al actualizar recomendaciones (visits):", e)
+        return {"message": "Visita registrada (recomendaciones no actualizadas)"}
 
 
 @router.get("/{user_id}/visits")
 def get_visits(user_id: str):
-    """Obtiene la lista de lugares visitados por el usuario"""
-    
-    if database.users_collection is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Base de datos no disponible"
-        )
+    """
+    Obtiene los lugares visitados CON información completa
+    """
+    if database.users_collection is None or database.db is None:
+        raise HTTPException(503, "Base de datos no disponible")
     
     if not ObjectId.is_valid(user_id):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="ID de usuario inválido"
-        )
+        raise HTTPException(400, "ID de usuario inválido")
     
+    # 1. Obtener usuario y sus visits
     user = database.users_collection.find_one(
         {"_id": ObjectId(user_id)},
         {"visits": 1}
     )
     
     if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Usuario no encontrado"
-        )
+        raise HTTPException(404, "Usuario no encontrado")
     
-    visited_places = user.get("visits", [])
+    visited_ids = user.get("visits", [])
     
-    return {"visited_places": visited_places}
-
+    if not visited_ids:
+        return {
+            "success": True,
+            "visited_places": [],
+            "count": 0
+        }
+    
+    # 2. Convertir IDs a ObjectId
+    object_ids = []
+    for vid in visited_ids:
+        if ObjectId.is_valid(vid):
+            object_ids.append(ObjectId(vid))
+    
+    # 3. Buscar items completos en combined
+    combined_col = database.db["combined"]
+    items = list(combined_col.find({"_id": {"$in": object_ids}}))
+    
+    # 4. Formatear respuesta
+    formatted_items = []
+    for item in items:
+        formatted_item = {
+            "id": str(item["_id"]),
+            "type": item.get("type", "place"),
+            "title": item.get("title", "Sin título"),
+            "category": item.get("category") or item.get("categoria"),
+        }
+        
+        # Extraer imagen
+        if "images" in item and isinstance(item["images"], list) and len(item["images"]) > 0:
+            formatted_item["image"] = item["images"][0]
+        elif "image" in item:
+            formatted_item["image"] = item["image"]
+        else:
+            formatted_item["image"] = None
+        
+        formatted_items.append(formatted_item)
+    
+    return {
+        "success": True,
+        "visited_places": formatted_items,
+        "count": len(formatted_items)
+    }
 
 @router.delete("/{user_id}/visits/{combined_id}")
 def unvisits(user_id: str, combined_id: str):
@@ -453,9 +534,11 @@ def unvisits(user_id: str, combined_id: str):
 
 # ==================== EVENTOS/PLACES ====================
 
+# En user_routes.py - ACTUALIZAR las funciones de interacción
+
 @router.post("/{user_id}/likes/{combined_id}")
 def likes(user_id: str, combined_id: str):
-    """Añade un evento/lugar a favoritos Y actualiza recomendaciones"""
+    """Añade un evento/lugar a favoritos Y actualiza recomendaciones UNIFICADAS"""
     
     if database.users_collection is None:
         raise HTTPException(
@@ -469,7 +552,7 @@ def likes(user_id: str, combined_id: str):
             detail="ID de usuario inválido"
         )
     
-    # Guardar like en la base de datos
+    # 1. Guardar like en la base de datos
     result = database.users_collection.update_one(
         {"_id": ObjectId(user_id)},
         {"$addToSet": {"likes": combined_id}}
@@ -481,66 +564,101 @@ def likes(user_id: str, combined_id: str):
             detail="Usuario no encontrado"
         )
     
-    # 🔥 NUEVO: Actualizar recomendaciones basadas en el like
+    # 2. 🔥 ACTUALIZACIÓN UNIFICADA - Usar el sistema unificado
     try:
-        # Determinar tipo (place o event) desde combined collection
-        combined_col = database.db["combined"]
-        item = combined_col.find_one({"_id": ObjectId(combined_id)})
+        from app.utils.unified_recommender import UnifiedRecommender
         
-        if item:
-            item_type = item.get("type", "place")
-            item_id = str(item.get("place_id") or item.get("event_id", ""))
-            
-            # Actualizar perfil del usuario y generar recomendaciones
-            rec_result = update_user_recommendations(
-                user_id=user_id,
-                interaction_type="like",
-                item_id=item_id,
-                item_type=item_type,
-                users_collection=database.users_collection,
-                n_recommendations=20
-            )
-            
-            return {
-                "message": "Item añadido a favoritos",
-                "recommendations_updated": rec_result.get("success", False),
-                "new_recommendations_count": rec_result.get("num_recommendations", 0)
-            }
+        recommender = UnifiedRecommender()
+        new_recommendations = recommender.generate_unified_recommendations(
+            user_id=user_id,
+            users_collection=database.users_collection,
+            n_recommendations=20
+        )
+        
+        # Guardar nuevas recomendaciones
+        database.users_collection.update_one(
+            {"_id": ObjectId(user_id)},
+            {"$set": {"recommendations": new_recommendations}}
+        )
+        
+        return {
+            "message": "Item añadido a favoritos",
+            "recommendations_updated": True,
+            "num_recommendations": len(new_recommendations),
+            "recommendation_phase": "cold_start" if recommender.is_cold_start_user(user_id, database.users_collection) else "hybrid"
+        }
+        
     except Exception as e:
-        print(f"⚠️  Error al actualizar recomendaciones: {e}")
-        # No fallar si las recomendaciones fallan
+        print(f"⚠️  Error al actualizar recomendaciones unificadas: {e}")
+        import traceback
+        traceback.print_exc()
         return {"message": "Item añadido a favoritos (recomendaciones no actualizadas)"}
+
 
 @router.get("/{user_id}/likes")
 def get_likes(user_id: str):
-    """Obtiene la lista de eventos favoritos del usuario"""
-    
-    if database.users_collection is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Base de datos no disponible"
-        )
+    """
+    Obtiene los lugares con like CON información completa
+    """
+    if database.users_collection is None or database.db is None:
+        raise HTTPException(503, "Base de datos no disponible")
     
     if not ObjectId.is_valid(user_id):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="ID de usuario inválido"
-        )
+        raise HTTPException(400, "ID de usuario inválido")
     
+    # 1. Obtener usuario y sus likes
     user = database.users_collection.find_one(
         {"_id": ObjectId(user_id)},
         {"likes": 1}
     )
     
     if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Usuario no encontrado"
-        )
+        raise HTTPException(404, "Usuario no encontrado")
     
-    liked_events = user.get("likes", [])
+    liked_ids = user.get("likes", [])
     
-    return {"liked_events": liked_events}
+    if not liked_ids:
+        return {
+            "success": True,
+            "liked_places": [],
+            "count": 0
+        }
+    
+    # 2. Convertir IDs a ObjectId
+    object_ids = []
+    for lid in liked_ids:
+        if ObjectId.is_valid(lid):
+            object_ids.append(ObjectId(lid))
+    
+    # 3. Buscar items completos en combined
+    combined_col = database.db["combined"]
+    items = list(combined_col.find({"_id": {"$in": object_ids}}))
+    
+    # 4. Formatear respuesta
+    formatted_items = []
+    for item in items:
+        formatted_item = {
+            "id": str(item["_id"]),
+            "type": item.get("type", "place"),
+            "title": item.get("title", "Sin título"),
+            "category": item.get("category") or item.get("categoria"),
+        }
+        
+        # Extraer imagen
+        if "images" in item and isinstance(item["images"], list) and len(item["images"]) > 0:
+            formatted_item["image"] = item["images"][0]
+        elif "image" in item:
+            formatted_item["image"] = item["image"]
+        else:
+            formatted_item["image"] = None
+        
+        formatted_items.append(formatted_item)
+    
+    return {
+        "success": True,
+        "liked_places": formatted_items,
+        "count": len(formatted_items)
+    }
 
 @router.delete("/{user_id}/likes/{combined_id}")
 def unlikes(user_id: str, combined_id: str):
@@ -574,84 +692,64 @@ def unlikes(user_id: str, combined_id: str):
 
 # ==================== INTERACCIONES ====================
 
-@router.post("/{user_id}/interact/{combined_id}")
-def interact(
-    user_id: str,
-    combined_id: str,
-    interaction_type: str = Query(..., description="view, click, share")
-):
-    """
-    Registra una interacción del usuario sin guardarla permanentemente.
-    Útil para tracking de vistas y clicks.
-    """
+
+class InteractionModel(BaseModel):
+    combined_id: str
+    type: str  # share, click, open, etc
+
+@router.post("/{user_id}/interact")
+def interact(user_id: str, data: InteractionModel):
+    """Registra una interacción del usuario y actualiza recomendaciones"""
+
     if database.users_collection is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Base de datos no disponible"
-        )
-    
+        raise HTTPException(503, "Base de datos no disponible")
+
     if not ObjectId.is_valid(user_id):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="ID de usuario inválido"
-        )
-    
-    # Validar tipo de interacción
-    valid_interactions = ["view", "click", "share"]
-    if interaction_type not in valid_interactions:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Tipo de interacción inválido. Debe ser uno de: {valid_interactions}"
-        )
-    
+        raise HTTPException(400, "ID de usuario inválido")
+
+    result = database.users_collection.update_one(
+        {"_id": ObjectId(user_id)},
+        {"$addToSet": {"interactions": {"id": data.combined_id, "type": data.type}}}
+    )
+
+    if result.matched_count == 0:
+        raise HTTPException(404, "Usuario no encontrado")
+
+    # 🔥 Recomendaciones unificadas
     try:
-        # Obtener item de la colección combinada
-        combined_col = database.db["combined"]
-        item = combined_col.find_one({"_id": ObjectId(combined_id)})
-        
-        if not item:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Item no encontrado"
-            )
-        
-        item_type = item.get("type", "place")
-        item_id = str(item.get("place_id") or item.get("event_id", ""))
-        
-        # Actualizar recomendaciones
-        rec_result = update_user_recommendations(
+        from app.utils.unified_recommender import UnifiedRecommender
+
+        recommender = UnifiedRecommender()
+        new_recommendations = recommender.generate_unified_recommendations(
             user_id=user_id,
-            interaction_type=interaction_type,
-            item_id=item_id,
-            item_type=item_type,
-            users_collection=database.users_collection
+            users_collection=database.users_collection,
+            n_recommendations=20
         )
-        
+
+        database.users_collection.update_one(
+            {"_id": ObjectId(user_id)},
+            {"$set": {"recommendations": new_recommendations}}
+        )
+
         return {
-            "status": "ok",
-            "interaction_type": interaction_type,
-            "updated_vector": rec_result.get("success", False),
-            "new_recommendations": rec_result.get("num_recommendations", 0)
+            "message": "Interacción registrada",
+            "recommendations_updated": True,
+            "num_recommendations": len(new_recommendations),
+            "recommendation_phase": "cold_start"
+                if recommender.is_cold_start_user(user_id, database.users_collection)
+                else "hybrid"
         }
-        
-    except HTTPException:
-        raise
+
     except Exception as e:
-        print(f"❌ Error en interact: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error al procesar interacción: {str(e)}"
-        )
+        print("⚠️ Error al actualizar recomendaciones (interact):", e)
+        return {"message": "Interacción registrada (recomendaciones no actualizadas)"}
+
 # ==================== RECOMMENDATIONS ====================
 
 @router.put("/{user_id}/recommendations")
 def update_recommendations(user_id: str, data: dict = Body(...)):
     """
     Actualiza o reemplaza completamente las recomendaciones del usuario.
-    Espera un JSON como:
-    {
-        "recommended_ids": ["67300c3c5678abcd9012ef34", "67300d2a9012abcd3456ef78"]
-    }
     """
     if database.users_collection is None:
         raise HTTPException(
@@ -714,4 +812,86 @@ def get_recommendations(user_id: str):
         )
 
     return {"recommendations": user.get("recommendations", [])}
+
+
+@router.post("/{user_id}/initialize-recommendations")
+def initialize_recommendations_endpoint(user_id: str):
+    """
+    Genera recomendaciones iniciales para un usuario existente.
+    """
+    if database.users_collection is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Base de datos no disponible"
+        )
     
+    if not ObjectId.is_valid(user_id):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="ID de usuario inválido"
+        )
+    
+    result = initialize_user_recommendations(user_id, database.users_collection)
+    
+    if result["success"]:
+        return {
+            "message": "Recomendaciones inicializadas",
+            "num_recommendations": result["num_recommendations"],
+            "new_initialization": result.get("new_initialization", False)
+        }
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=result.get("error", "Error al inicializar recomendaciones")
+        )
+    
+    # En user_routes.py - AÑADIR nuevo endpoint
+
+@router.post("/{user_id}/refresh-recommendations")
+def refresh_recommendations(user_id: str):
+    """Fuerza el recálculo de recomendaciones usando el sistema unificado"""
+    
+    if database.users_collection is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Base de datos no disponible"
+        )
+    
+    if not ObjectId.is_valid(user_id):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="ID de usuario inválido"
+        )
+    
+    try:
+        from app.utils.unified_recommender import UnifiedRecommender
+        
+        recommender = UnifiedRecommender()
+        new_recommendations = recommender.generate_unified_recommendations(
+            user_id=user_id,
+            users_collection=database.users_collection,
+            n_recommendations=20
+        )
+        
+        # Guardar nuevas recomendaciones
+        database.users_collection.update_one(
+            {"_id": ObjectId(user_id)},
+            {"$set": {"recommendations": new_recommendations}}
+        )
+        
+        interaction_count = recommender.get_user_interaction_count(user_id, database.users_collection)
+        
+        return {
+            "success": True,
+            "message": "Recomendaciones actualizadas",
+            "num_recommendations": len(new_recommendations),
+            "interaction_count": interaction_count,
+            "phase": "cold_start" if interaction_count < 5 else "hybrid"
+        }
+        
+    except Exception as e:
+        print(f"❌ Error al refrescar recomendaciones: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error al actualizar recomendaciones: {str(e)}"
+        )
