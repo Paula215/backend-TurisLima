@@ -7,6 +7,9 @@ from pymongo.errors import DuplicateKeyError
 from bson import ObjectId
 from typing import List, Optional
 from pydantic import BaseModel
+from app.utils.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 # IMPORTANTE: Importar el módulo completo, no las variables directamente
 from app.database import database
@@ -79,7 +82,7 @@ def register_user(user: UserRegister):
                 "num_recommendations": rec_result.get("num_recommendations", 0)
             }
         except Exception as e:
-            print(f"⚠️  Error al generar recomendaciones iniciales: {e}")
+            logger.exception("Error al generar recomendaciones iniciales: %s", e)
             return {
                 "message": "Usuario registrado exitosamente (sin recomendaciones iniciales)",
                 "user_id": user_id
@@ -293,7 +296,7 @@ def saves(user_id: str, combined_id: str):
         }
 
     except Exception as e:
-        print("⚠️ Error al actualizar recomendaciones (saves):", e)
+        logger.exception("Error al actualizar recomendaciones (saves): %s", e)
         return {"message": "Item guardado (recomendaciones no actualizadas)"}
 
 @router.get("/{user_id}/saves")
@@ -434,7 +437,7 @@ def visits(user_id: str, combined_id: str):
         }
 
     except Exception as e:
-        print("⚠️ Error al actualizar recomendaciones (visits):", e)
+        logger.exception("Error al actualizar recomendaciones (visits): %s", e)
         return {"message": "Visita registrada (recomendaciones no actualizadas)"}
 
 
@@ -589,9 +592,7 @@ def likes(user_id: str, combined_id: str):
         }
         
     except Exception as e:
-        print(f"⚠️  Error al actualizar recomendaciones unificadas: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.exception("Error al actualizar recomendaciones unificadas: %s", e)
         return {"message": "Item añadido a favoritos (recomendaciones no actualizadas)"}
 
 
@@ -741,7 +742,7 @@ def interact(user_id: str, data: InteractionModel):
         }
 
     except Exception as e:
-        print("⚠️ Error al actualizar recomendaciones (interact):", e)
+        logger.exception("Error al actualizar recomendaciones (interact): %s", e)
         return {"message": "Interacción registrada (recomendaciones no actualizadas)"}
 
 # ==================== RECOMMENDATIONS ====================
@@ -890,7 +891,7 @@ def refresh_recommendations(user_id: str):
         }
         
     except Exception as e:
-        print(f"❌ Error al refrescar recomendaciones: {e}")
+        logger.exception("Error al refrescar recomendaciones: %s", e)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error al actualizar recomendaciones: {str(e)}"

@@ -6,6 +6,9 @@ from app.utils.cf_aux import hybrid_recommendations
 from datetime import datetime
 from pymongo import MongoClient
 import os
+from app.utils.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 class UnifiedRecommender:
     def __init__(self):
@@ -47,10 +50,10 @@ class UnifiedRecommender:
         """
         # Verificar fase del usuario
         if self.is_cold_start_user(user_id, users_collection):
-            print(f"🎯 Usuario {user_id} en COLD START")
+            logger.info("Usuario %s en COLD START", user_id)
             return self._get_cold_start_recommendations(user_id, users_collection, n_recommendations)
         else:
-            print(f"🎯 Usuario {user_id} en FASE HÍBRIDA")
+            logger.info("Usuario %s en FASE HÍBRIDA", user_id)
             return self._get_hybrid_recommendations(user_id, users_collection, n_recommendations)
     
     def _get_cold_start_recommendations(
@@ -151,7 +154,7 @@ class UnifiedRecommender:
             return cf_scores
             
         except Exception as e:
-            print(f"⚠️  Error en collaborative filtering: {e}")
+            logger.exception("Error en collaborative filtering: %s", e)
             return {}
     
     def _combine_recommendations(

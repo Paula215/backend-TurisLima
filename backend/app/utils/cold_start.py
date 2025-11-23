@@ -9,6 +9,9 @@ import random
 import os
 from dotenv import load_dotenv
 
+from app.utils.logging_config import get_logger
+logger = get_logger(__name__)
+
 load_dotenv()
 
 MONGO_URI = os.getenv("MONGO_URI")
@@ -90,8 +93,9 @@ def get_related_items_for_preference(
     mapping = PREFERENCE_MAPPINGS.get(preference.lower(), {})
     
     if not mapping:
-        print(f"⚠️  Preferencia '{preference}' no tiene mapping, usando items populares")
+        logger.warning("Preferencia '%s' no tiene mapping, usando items populares", preference)
         return []
+    
     
     place_categories = mapping.get("place_categories", [])
     event_categories = mapping.get("event_categories", [])
@@ -150,7 +154,7 @@ def get_diverse_items(
             if ObjectId.is_valid(eid):
                 exclude_object_ids.append(ObjectId(eid))
         except Exception as e:
-            print(f"⚠️  ID inválido ignorado: {eid}")
+            logger.warning("ID inválido ignorado: %s", eid)
     
     # Mitad places, mitad events
     n_places = n_items // 2
@@ -179,7 +183,7 @@ def get_diverse_items(
             )
             items.extend([str(p["_id"]) for p in places])
         except Exception as e:
-            print(f"⚠️  Error buscando places de categoría {category}: {e}")
+            logger.exception("Error buscando places de categoría %s: %s", category, e)
     
     # Events de diferentes categorías
     for category in POPULAR_CATEGORIES["events"]:
@@ -203,7 +207,7 @@ def get_diverse_items(
             )
             items.extend([str(e["_id"]) for e in events])
         except Exception as e:
-            print(f"⚠️  Error buscando events de categoría {category}: {e}")
+            logger.exception("Error buscando events de categoría %s: %s", category, e)
     
     random.shuffle(items)
     return items[:n_items]
@@ -221,11 +225,7 @@ def generate_cold_start_recommendations(
     - 70% basado en preferencias del usuario
     - 30% items diversos y populares
     """
-    print(f"\n{'='*60}")
-    print(f"❄️  GENERANDO RECOMENDACIONES COLD START")
-    print(f"   Preferencias: {user_preferences}")
-    print(f"   Total a generar: {n_recommendations}")
-    print(f"{'='*60}\n")
+    logger.info("GENERANDO RECOMENDACIONES COLD START | Preferencias: %s | Total a generar: %d", user_preferences, n_recommendations)
     
     all_recommendations = []
     
@@ -235,30 +235,30 @@ def generate_cold_start_recommendations(
     if user_preferences and len(user_preferences) > 0:
         items_per_preference = n_preference_items // len(user_preferences)
         
-        print(f"📋 Obteniendo {n_preference_items} items basados en preferencias...")
+        logger.info("Obteniendo %d items basados en preferencias...", n_preference_items)
         
         for preference in user_preferences:
-            print(f"   🔍 Buscando items para '{preference}'...")
+            logger.debug("Buscando items para '%s'...", preference)
             items = get_related_items_for_preference(
                 preference,
                 combined_collection,
                 n_items=items_per_preference
             )
-            print(f"      ✓ {len(items)} items encontrados")
+            logger.info("%d items encontrados para %s", len(items), preference)
             all_recommendations.extend(items)
     else:
-        print("⚠️  Sin preferencias, usando solo items diversos")
+        logger.warning("Sin preferencias, usando solo items diversos")
     
     # 2. Items diversos (30% o el resto)
     n_diverse_items = n_recommendations - len(all_recommendations)
     
-    print(f"\n🎲 Obteniendo {n_diverse_items} items diversos...")
+    logger.info("Obteniendo %d items diversos...", n_diverse_items)
     diverse_items = get_diverse_items(
         combined_collection,
         n_items=n_diverse_items,
         exclude_ids=all_recommendations
     )
-    print(f"   ✓ {len(diverse_items)} items diversos encontrados")
+    logger.info("%d items diversos encontrados", len(diverse_items))
     
     all_recommendations.extend(diverse_items)
     
@@ -269,9 +269,7 @@ def generate_cold_start_recommendations(
     # 4. Recortar al tamaño solicitado
     all_recommendations = all_recommendations[:n_recommendations]
     
-    print(f"\n✅ RECOMENDACIONES GENERADAS")
-    print(f"   Total: {len(all_recommendations)}")
-    print(f"{'='*60}\n")
+    logger.info("RECOMENDACIONES GENERADAS | Total: %d", len(all_recommendations))
     
     return all_recommendations
 
@@ -290,7 +288,7 @@ def initialize_user_recommendations(user_id: str, users_collection) -> dict:
         # Verificar si ya tiene recomendaciones
         existing_recommendations = user.get("recommendations", [])
         if existing_recommendations and len(existing_recommendations) > 0:
-            print(f"ℹ️  Usuario ya tiene {len(existing_recommendations)} recomendaciones")
+            logger.info("Usuario ya tiene %d recomendaciones", len(existing_recommendations))
             return {
                 "success": True,
                 "message": "Usuario ya tiene recomendaciones",
@@ -302,9 +300,8 @@ def initialize_user_recommendations(user_id: str, users_collection) -> dict:
         user_preferences = user.get("preferences", [])
         
         if not user_preferences:
-            print("⚠️  Usuario sin preferencias, usando categorías populares")
+            logger.warning("Usuario sin preferencias, usando categorías populares")
             user_preferences = ["cultura", "gastronomía"]  # Default
-        
         # Conectar a combined
         client = MongoClient(MONGO_URI)
         db = client[DB_NAME]

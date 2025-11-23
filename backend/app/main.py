@@ -7,6 +7,7 @@ from app.routes import user_routes, places_routes, events_routes, feed_routes
 
 import logging
 import time
+import asyncio
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -59,7 +60,7 @@ async def startup_event():
             wait_time = (attempt + 1) * 2
             logger.warning(f"⏳ Reintentando en {wait_time}s...")
             logger.info(f"🔄 Intento de conexión a MongoDB ({attempt + 2}/{max_attempts})...")
-            time.sleep(wait_time)
+            await asyncio.sleep(wait_time)
     
     logger.error("❌ No se pudo conectar a MongoDB. La aplicación puede no funcionar correctamente.")
 

@@ -7,6 +7,9 @@ from typing import List, Tuple, Optional
 import os
 from dotenv import load_dotenv
 from bson import ObjectId
+from app.utils.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 load_dotenv()
 
@@ -116,14 +119,14 @@ def get_item_embedding(
 
         if doc and "vector" in doc:
             vector = np.array(doc["vector"], dtype=np.float32)
-            print(f"✅ Vector obtenido para {item_type} {item_id}: shape {vector.shape}")
+            logger.info("Vector obtenido para %s %s: shape %s", item_type, item_id, vector.shape)
             return vector
         else:
-            print(f"⚠️  No se encontró 'vector' en 'combined' para {item_type} {item_id}")
+            logger.warning("No se encontró 'vector' en 'combined' para %s %s", item_type, item_id)
             return None
 
     except Exception as e:
-        print(f"❌ Error al obtener vector: {e}")
+        logger.exception("Error al obtener vector: %s", e)
         return None
     finally:
         if 'client' in locals():
@@ -159,7 +162,7 @@ def get_top_similar_items(
         
         recommended_ids = []
 
-        print(f"🔍 Buscando {n} items similares en 'combined'...")
+        logger.info("Buscando %d items similares en 'combined'...", n)
 
         combined_col = db["combined"]
 
@@ -187,15 +190,13 @@ def get_top_similar_items(
 
         for doc in combined_col.aggregate(pipeline):
             recommended_ids.append(str(doc["_id"]))
-            print(f"  🎉 Item {doc.get('type', '?')} {str(doc.get('_id'))} - Score: {doc.get('score', 0):.4f}")
+            logger.debug("Item %s %s - Score: %.4f", doc.get('type', '?'), str(doc.get('_id')), doc.get('score', 0))
 
-        print(f"✅ Encontradas {len(recommended_ids)} recomendaciones desde 'combined'")
+        logger.info("Encontradas %d recomendaciones desde 'combined'", len(recommended_ids))
         return recommended_ids
         
     except Exception as e:
-        print(f"❌ Error en búsqueda vectorial: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.exception("Error en búsqueda vectorial: %s", e)
         return []
     finally:
         if 'client' in locals():
@@ -233,7 +234,7 @@ def initialize_user_vector(
         {"$set": {"embedding": user_vec.tolist()}}
     )
     
-    print(f"✅ Vector inicializado para usuario {user_id}")
+    logger.info("Vector inicializado para usuario %s", user_id)
     return user_vec
 
 
@@ -260,7 +261,7 @@ def get_user_vector(user_id: str, users_collection) -> Optional[np.ndarray]:
         return np.array(user["embedding"], dtype=np.float32)
     else:
         # Si no existe, inicializar
-        print(f"⚠️  Usuario {user_id} sin embedding, inicializando...")
+        logger.warning("Usuario %s sin embedding, inicializando...", user_id)
         return initialize_user_vector(user_id, users_collection)
 
 
@@ -289,7 +290,7 @@ def save_user_vector(
         )
         return result.modified_count > 0
     except Exception as e:
-        print(f"❌ Error al guardar vector: {e}")
+        logger.exception("Error al guardar vector: %s", e)
         return False
 
 
@@ -320,12 +321,7 @@ def update_user_recommendations(
         Dict con información del proceso
     """
     try:
-        print(f"\n{'='*60}")
-        print(f"🔄 ACTUALIZANDO RECOMENDACIONES")
-        print(f"   Usuario: {user_id}")
-        print(f"   Interacción: {interaction_type}")
-        print(f"   Item: {item_type} {item_id}")
-        print(f"{'='*60}\n")
+        logger.info("ACTUALIZANDO RECOMENDACIONES | Usuario: %s | Interacción: %s | Item: %s %s", user_id, interaction_type, item_type, item_id)
         
         # 1. Obtener vector actual del usuario
         user_vec = get_user_vector(user_id, users_collection)
@@ -338,14 +334,14 @@ def update_user_recommendations(
         # Si es un place sin embedding, usar vector aleatorio pequeño
         if item_vec is None:
             if item_type == "place":
-                print("⚠️  Place sin embedding, usando actualización genérica")
+                logger.warning("Place sin embedding, usando actualización genérica")
                 # Actualizar muy levemente con ruido aleatorio
                 item_vec = np.random.randn(EMBEDDING_DIM).astype(np.float32) * 0.01
                 norm = np.linalg.norm(item_vec)
                 if norm > 0:
                     item_vec = item_vec / norm
             else:
-                print("⚠️  No se pudo obtener embedding del evento, usando vector anterior")
+                logger.warning("No se pudo obtener embedding del evento, usando vector anterior")
                 item_vec = user_vec  # Fallback
         
         # 3. Actualizar vector del usuario
@@ -362,7 +358,7 @@ def update_user_recommendations(
         )
         
         if not recommended_ids:
-            print("⚠️  No se encontraron recomendaciones, usando fallback")
+            logger.warning("No se encontraron recomendaciones, usando fallback")
             # Obtener eventos populares como fallback
             from pymongo import MongoClient
             import os
@@ -389,9 +385,7 @@ def update_user_recommendations(
             {"$set": {"recommendations": recommended_ids}}
         )
         
-        print(f"\n✅ PROCESO COMPLETADO")
-        print(f"   Nuevas recomendaciones: {len(recommended_ids)}")
-        print(f"{'='*60}\n")
+        logger.info("PROCESO COMPLETADO | Nuevas recomendaciones: %d", len(recommended_ids))
         
         return {
             "success": True,

@@ -4,3 +4,5 @@ __pycache__/
 .vscode/
 *.db
 .env/
+backend/AUDIT_REPORT.md
+backend/LOGGING_CONFIG.md
